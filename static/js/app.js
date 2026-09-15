@@ -1,584 +1,511 @@
 "use strict";
 
-/* =========================================================================
-   Ikoner (delas mellan block som byggs dynamiskt)
-   ========================================================================= */
+/* ==========================================================================
+   Tillstånd
+   ========================================================================== */
 
-const ICON_CHEVRON_LEFT =
-  '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>';
-const ICON_CHEVRON_RIGHT =
-  '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>';
-const ICON_PLUS =
-  '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>';
-const ICON_TRASH =
-  '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6h16Z"/></svg>';
-const ICON_CLOSE =
-  '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>';
+let notes = [];
+let current = null;      // hela den öppna anteckningen
+let dirty = false;       // finns osparade ändringar?
+let saveTimer = null;
+let saving = false;
 
-/* =========================================================================
-   API-hjälpare
-   ========================================================================= */
+const $ = (sel) => document.querySelector(sel);
 
-async function apiCall(url, options) {
-  const res = await fetch(url, options);
-  let data = null;
+const el = {
+  noteList: $("#noteList"),
+  listEmpty: $("#listEmpty"),
+  sidebar: $("#sidebar"),
+  scrim: $("#scrim"),
+  menuBtn: $("#menuBtn"),
+  titles: $("#titles"),
+  title: $("#title"),
+  tags: $("#tags"),
+  status: $("#status"),
+  deleteNote: $("#deleteNote"),
+  empty: $("#empty"),
+  editor: $("#editor"),
+  segments: $("#segments"),
+  addSegment: $("#addSegment"),
+  newNote: $("#newNote"),
+  emptyNew: $("#emptyNew"),
+  themeBtn: $("#themeBtn"),
+  themeColorMeta: $("#themeColorMeta"),
+  importBtn: $("#importBtn"),
+  importFile: $("#importFile"),
+};
+
+/* ==========================================================================
+   API
+   ========================================================================== */
+
+async function api(url, options = {}) {
+  const res = await fetch(url, {
+    headers: { "Content-Type": "application/json" },
+    ...options,
+  });
+  let body = null;
   try {
-    data = await res.json();
-  } catch (e) {
-    data = null;
+    body = await res.json();
+  } catch (_) {
+    body = null;
   }
   if (!res.ok) {
-    const message = (data && data.error) || "Något gick fel mot servern.";
-    throw new Error(message);
+    throw new Error((body && body.error) || `Servern svarade ${res.status}.`);
   }
-  return data;
+  return body;
 }
 
-const API = {
-  listNotes: () => apiCall("/api/notes"),
-  createNote: () =>
-    apiCall("/api/notes", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    }),
-  getNote: (id) => apiCall(`/api/notes/${id}`),
-  updateNoteTitle: (id, title) =>
-    apiCall(`/api/notes/${id}`, {
+/* ==========================================================================
+   Status
+   ========================================================================== */
+
+let statusTimer = null;
+
+function setStatus(text, kind = "") {
+  clearTimeout(statusTimer);
+  el.status.textContent = text;
+  el.status.className = "status" + (kind ? " " + kind : "");
+  if (kind === "saved") {
+    statusTimer = setTimeout(() => {
+      el.status.textContent = "";
+      el.status.className = "status";
+    }, 1600);
+  }
+}
+
+/* ==========================================================================
+   Autospara
+   ========================================================================== */
+
+// Räknare som stegas vid varje ändring. Gör att vi kan se om användaren
+// hann skriva mer medan ett sparanrop var på väg.
+let revision = 0;
+
+function markDirty() {
+  dirty = true;
+  revision++;
+  setStatus("Sparar …");
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(save, 800);
+}
+
+async function save() {
+  clearTimeout(saveTimer);
+  if (!current || !dirty || saving) return;
+  saving = true;
+  const noteId = current.id;
+  const revAtSend = revision;
+  try {
+    const saved = await api("/api/notes/" + noteId, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title }),
-    }),
-  deleteNote: (id) => apiCall(`/api/notes/${id}`, { method: "DELETE" }),
-  addBlock: (noteId) => apiCall(`/api/notes/${noteId}/blocks`, { method: "POST" }),
-  deleteBlock: (blockId) => apiCall(`/api/blocks/${blockId}`, { method: "DELETE" }),
-  updateBlockContent: (blockId, content) =>
-    apiCall(`/api/blocks/${blockId}/content`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content }),
-    }),
-  addVersion: (blockId) => apiCall(`/api/blocks/${blockId}/versions`, { method: "POST" }),
-  setActiveVersion: (blockId, direction) =>
-    apiCall(`/api/blocks/${blockId}/active-version`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ direction }),
-    }),
-  deleteVersion: (versionId) => apiCall(`/api/versions/${versionId}`, { method: "DELETE" }),
-};
-
-/* =========================================================================
-   Tillstånd + DOM-referenser
-   ========================================================================= */
-
-const state = {
-  notes: [],
-  currentNote: null,
-};
-
-const els = {
-  notesList: document.getElementById("notes-list"),
-  emptyState: document.getElementById("empty-state"),
-  appLayout: document.getElementById("app-layout"),
-  detailPlaceholder: document.getElementById("detail-placeholder"),
-  noteEditor: document.getElementById("note-editor"),
-  noteTitleInput: document.getElementById("note-title-input"),
-  blocksContainer: document.getElementById("blocks-container"),
-  saveIndicator: document.getElementById("save-indicator"),
-  backBtn: document.getElementById("back-btn"),
-  deleteNoteBtn: document.getElementById("delete-note-btn"),
-  addBlockBtn: document.getElementById("add-block-btn"),
-  fabNewNote: document.getElementById("fab-new-note"),
-  themeToggleBtn: document.getElementById("theme-toggle-btn"),
-  installBtn: document.getElementById("install-btn"),
-  themeColorMeta: document.getElementById("theme-color-meta"),
-};
-
-/* =========================================================================
-   Hjälpfunktioner
-   ========================================================================= */
-
-function escapeHtml(str) {
-  const div = document.createElement("div");
-  div.textContent = str == null ? "" : str;
-  return div.innerHTML;
-}
-
-function formatTimestamp(iso) {
-  const d = new Date(iso);
-  const now = new Date();
-  const time = d.toLocaleTimeString("sv-SE", { hour: "2-digit", minute: "2-digit" });
-
-  const sameDay = d.toDateString() === now.toDateString();
-  if (sameDay) return `Idag ${time}`;
-
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-  if (d.toDateString() === yesterday.toDateString()) return `Igår ${time}`;
-
-  return `${d.toLocaleDateString("sv-SE", { day: "numeric", month: "short" })} ${time}`;
-}
-
-function autosize(textarea) {
-  textarea.style.height = "auto";
-  textarea.style.height = textarea.scrollHeight + "px";
-}
-
-let saveIndicatorTimer = null;
-
-function showSaving() {
-  clearTimeout(saveIndicatorTimer);
-  els.saveIndicator.textContent = "Sparar …";
-  els.saveIndicator.className = "save-indicator saving";
-}
-
-function showSaved() {
-  els.saveIndicator.textContent = "Sparat";
-  els.saveIndicator.className = "save-indicator saved";
-  clearTimeout(saveIndicatorTimer);
-  saveIndicatorTimer = setTimeout(() => {
-    els.saveIndicator.textContent = "";
-    els.saveIndicator.className = "save-indicator";
-  }, 1400);
-}
-
-function showError(message) {
-  clearTimeout(saveIndicatorTimer);
-  els.saveIndicator.textContent = "Kunde inte spara";
-  els.saveIndicator.className = "save-indicator error";
-  if (message) console.error(message);
-}
-
-/* =========================================================================
-   Rendering: anteckningslistan
-   ========================================================================= */
-
-async function loadNotes() {
-  const notes = await API.listNotes();
-  state.notes = notes;
-  renderNotesList();
-}
-
-function renderNotesList() {
-  els.notesList.innerHTML = "";
-  els.emptyState.classList.toggle("hidden", state.notes.length > 0);
-
-  for (const note of state.notes) {
-    const item = document.createElement("button");
-    item.type = "button";
-    item.className = "note-list-item";
-    if (state.currentNote && state.currentNote.id === note.id) {
-      item.classList.add("active");
+      body: JSON.stringify(current),
+    });
+    updateListEntry(saved);
+    if (current && current.id === noteId && revision === revAtSend) {
+      // Inget hann ändras medan anropet pågick — då stämmer serverns
+      // id:n mot det vi har, och anteckningen är i synk.
+      applyIds(current, saved);
+      current.updated_at = saved.updated_at;
+      dirty = false;
+      setStatus("Sparat", "saved");
+    } else {
+      // Användaren skrev vidare. Spara om direkt.
+      saving = false;
+      return save();
     }
-    item.innerHTML = `
-      <div class="note-list-item-top">
-        <span class="note-list-item-title">${escapeHtml(note.title || "Namnlös anteckning")}</span>
-        <span class="note-list-item-time">${formatTimestamp(note.updated_at)}</span>
-      </div>
-      <p class="note-list-item-preview">${escapeHtml(note.preview || "")}</p>
-    `;
-    item.addEventListener("click", () => openNote(note.id));
-    els.notesList.appendChild(item);
+  } catch (err) {
+    setStatus("Kunde inte spara", "error");
+    console.error(err);
+  } finally {
+    saving = false;
   }
 }
 
-function updateNoteInListLocally() {
-  const note = state.notes.find((n) => n.id === state.currentNote.id);
-  if (!note) return;
-  note.title = state.currentNote.title;
-  note.updated_at = state.currentNote.updated_at;
-  state.notes.sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
-  renderNotesList();
-}
-
-function updateNotePreviewLocally() {
-  const note = state.notes.find((n) => n.id === state.currentNote.id);
-  if (!note) return;
-  const firstBlock = state.currentNote.blocks[0];
-  if (firstBlock) {
-    const activeVersion = firstBlock.versions.find((v) => v.id === firstBlock.active_version_id);
-    note.preview = (activeVersion ? activeVersion.content : "").slice(0, 160);
-  }
-  note.updated_at = state.currentNote.updated_at;
-  state.notes.sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
-  renderNotesList();
-}
-
-/* =========================================================================
-   Rendering: anteckningseditorn
-   ========================================================================= */
-
-async function openNote(id) {
-  try {
-    const note = await API.getNote(id);
-    state.currentNote = note;
-    renderNotesList();
-    renderEditor();
-    els.appLayout.classList.add("show-detail");
-  } catch (e) {
-    showError(e.message);
-  }
-}
-
-function closeDetail() {
-  state.currentNote = null;
-  els.appLayout.classList.remove("show-detail");
-  renderNotesList();
-}
-
-function renderEditor() {
-  const note = state.currentNote;
-  if (!note) {
-    els.detailPlaceholder.classList.remove("hidden");
-    els.noteEditor.classList.add("hidden");
-    return;
-  }
-  els.detailPlaceholder.classList.add("hidden");
-  els.noteEditor.classList.remove("hidden");
-  els.noteTitleInput.value = note.title;
-
-  els.blocksContainer.innerHTML = "";
-  note.blocks.forEach((block) => {
-    els.blocksContainer.appendChild(renderBlock(block));
-  });
-}
-
-function renderBlock(block) {
-  const wrapper = document.createElement("div");
-  wrapper.className = "block";
-  wrapper.dataset.blockId = block.id;
-
-  const activeVersion =
-    block.versions.find((v) => v.id === block.active_version_id) || block.versions[0];
-  const versionIndex = block.versions.findIndex((v) => v.id === activeVersion.id);
-  const hasMultiple = block.versions.length > 1;
-
-  const toolbar = document.createElement("div");
-  toolbar.className = "block-toolbar";
-
-  const versionSwitcher = document.createElement("div");
-  versionSwitcher.className = "version-switcher" + (hasMultiple ? "" : " hidden");
-  versionSwitcher.innerHTML = `
-    <button type="button" class="chevron-btn" data-action="prev-version" aria-label="Föregående version">${ICON_CHEVRON_LEFT}</button>
-    <span class="version-indicator">${versionIndex + 1}/${block.versions.length}</span>
-    <button type="button" class="chevron-btn" data-action="next-version" aria-label="Nästa version">${ICON_CHEVRON_RIGHT}</button>
-  `;
-
-  const actions = document.createElement("div");
-  actions.className = "block-actions";
-  actions.innerHTML = `
-    <button type="button" class="icon-btn small" data-action="add-version" title="Lägg till en alternativ version av det här stycket">
-      ${ICON_PLUS}<span class="btn-label">Version</span>
-    </button>
-    ${
-      hasMultiple
-        ? `<button type="button" class="icon-btn small danger icon-only" data-action="delete-version" title="Ta bort den här versionen">${ICON_TRASH}</button>`
-        : ""
-    }
-    <button type="button" class="icon-btn small danger icon-only" data-action="delete-block" title="Ta bort stycket">${ICON_CLOSE}</button>
-  `;
-
-  toolbar.appendChild(versionSwitcher);
-  toolbar.appendChild(actions);
-
-  const textarea = document.createElement("textarea");
-  textarea.className = "block-content";
-  textarea.placeholder = "Skriv något …";
-  textarea.value = activeVersion.content;
-  textarea.rows = 1;
-
-  wrapper.appendChild(toolbar);
-  wrapper.appendChild(textarea);
-
-  requestAnimationFrame(() => autosize(textarea));
-
-  textarea.addEventListener("input", () => {
-    autosize(textarea);
-    scheduleBlockSave(block.id, textarea.value);
-  });
-
-  toolbar.addEventListener("click", (e) => {
-    const btn = e.target.closest("button[data-action]");
-    if (!btn) return;
-    const action = btn.dataset.action;
-    if (action === "prev-version") switchVersion(block.id, "prev");
-    if (action === "next-version") switchVersion(block.id, "next");
-    if (action === "add-version") addVersionToBlock(block.id);
-    if (action === "delete-version") deleteCurrentVersion(activeVersion.id);
-    if (action === "delete-block") deleteBlockConfirm(block.id);
-  });
-
-  return wrapper;
-}
-
-/* =========================================================================
-   Sparande (debounce)
-   ========================================================================= */
-
-const blockSaveTimers = {};
-let titleSaveTimer = null;
-
-function scheduleBlockSave(blockId, content) {
-  const key = String(blockId);
-  showSaving();
-  clearTimeout(blockSaveTimers[key]);
-  blockSaveTimers[key] = setTimeout(async () => {
-    delete blockSaveTimers[key];
-    try {
-      await API.updateBlockContent(blockId, content);
-      const block = state.currentNote.blocks.find((b) => String(b.id) === key);
-      if (block) {
-        const v = block.versions.find((v) => v.id === block.active_version_id);
-        if (v) v.content = content;
-      }
-      state.currentNote.updated_at = new Date().toISOString();
-      updateNotePreviewLocally();
-      showSaved();
-    } catch (e) {
-      showError(e.message);
-    }
-  }, 700);
-}
-
-// Om ett stycke har en väntande (debounced) autosave när användaren gör
-// något som ritar om editorn (byter version, lägger till en version,
-// tar bort ett stycke osv), måste den väntande texten sparas FÖRST —
-// annars kan omritningen skriva över det man precis skrev med den
-// gamla, osparade texten.
-async function flushPendingSave(blockId) {
-  const key = String(blockId);
-  const timer = blockSaveTimers[key];
-  if (!timer) return;
-  clearTimeout(timer);
-  delete blockSaveTimers[key];
-  const textarea = els.blocksContainer.querySelector(`.block[data-block-id="${key}"] .block-content`);
-  if (!textarea) return;
-  try {
-    await API.updateBlockContent(key, textarea.value);
-    const block = state.currentNote.blocks.find((b) => String(b.id) === key);
-    if (block) {
-      const v = block.versions.find((v) => v.id === block.active_version_id);
-      if (v) v.content = textarea.value;
-    }
-  } catch (e) {
-    showError(e.message);
-  }
-}
-
-async function flushAllPendingSaves() {
-  const keys = Object.keys(blockSaveTimers);
-  for (const key of keys) {
-    await flushPendingSave(key);
-  }
-}
-
-/* =========================================================================
-   Versionshantering
-   ========================================================================= */
-
-async function switchVersion(blockId, direction) {
-  try {
-    await flushPendingSave(blockId);
-    const note = await API.setActiveVersion(blockId, direction);
-    state.currentNote = note;
-    renderEditor();
-  } catch (e) {
-    showError(e.message);
-  }
-}
-
-async function addVersionToBlock(blockId) {
-  try {
-    showSaving();
-    await flushPendingSave(blockId);
-    const note = await API.addVersion(blockId);
-    state.currentNote = note;
-    renderEditor();
-    showSaved();
-  } catch (e) {
-    showError(e.message);
-  }
-}
-
-async function deleteCurrentVersion(versionId) {
-  if (!confirm("Ta bort den här versionen av stycket? Går inte att ångra.")) return;
-  try {
-    const note = await API.deleteVersion(versionId);
-    state.currentNote = note;
-    renderEditor();
-  } catch (e) {
-    alert(e.message || "Kunde inte ta bort versionen.");
-  }
-}
-
-/* =========================================================================
-   Stycken och anteckningar: skapa/ta bort
-   ========================================================================= */
-
-async function deleteBlockConfirm(blockId) {
-  if (state.currentNote.blocks.length <= 1) {
-    alert("En anteckning måste ha minst ett stycke.");
-    return;
-  }
-  if (!confirm("Ta bort det här stycket, inklusive alla dess versioner?")) return;
-  try {
-    await flushAllPendingSaves();
-    const note = await API.deleteBlock(blockId);
-    state.currentNote = note;
-    renderEditor();
-  } catch (e) {
-    alert(e.message || "Kunde inte ta bort stycket.");
-  }
-}
-
-/* =========================================================================
-   Tema: ljust / mörkt / auto (efter tid på dygnet)
-   ========================================================================= */
-
-const THEME_KEY = "theme-preference";
-const THEME_MODES = ["light", "dark", "auto"];
-const THEME_LABELS = { light: "Ljust", dark: "Mörkt", auto: "Auto (efter tid)" };
-
-function computeAutoTheme() {
-  const h = new Date().getHours();
-  return h >= 19 || h < 7 ? "dark" : "light";
-}
-
-function getThemeMode() {
-  return localStorage.getItem(THEME_KEY) || "auto";
-}
-
-function applyTheme(mode) {
-  const resolved = mode === "auto" ? computeAutoTheme() : mode;
-  document.documentElement.setAttribute("data-theme", resolved);
-  els.themeToggleBtn.setAttribute("data-mode", mode);
-  els.themeToggleBtn.title = `Tema: ${THEME_LABELS[mode]} (tryck för att byta)`;
-  if (els.themeColorMeta) {
-    els.themeColorMeta.setAttribute("content", resolved === "dark" ? "#0d0d0c" : "#faf9f6");
-  }
-}
-
-function setThemeMode(mode) {
-  try {
-    localStorage.setItem(THEME_KEY, mode);
-  } catch (e) {
-    /* privatläge etc. — fortsätt ändå */
-  }
-  applyTheme(mode);
-}
-
-function cycleTheme() {
-  const current = getThemeMode();
-  const next = THEME_MODES[(THEME_MODES.indexOf(current) + 1) % THEME_MODES.length];
-  setThemeMode(next);
-}
-
-setInterval(() => {
-  if (getThemeMode() === "auto") applyTheme("auto");
-}, 60000);
-
-/* =========================================================================
-   PWA: installation + service worker
-   ========================================================================= */
-
-let deferredInstallPrompt = null;
-
-window.addEventListener("beforeinstallprompt", (e) => {
-  e.preventDefault();
-  deferredInstallPrompt = e;
-  els.installBtn.classList.remove("hidden");
-});
-
-window.addEventListener("appinstalled", () => {
-  els.installBtn.classList.add("hidden");
-  deferredInstallPrompt = null;
-});
-
-if ("serviceWorker" in navigator && window.isSecureContext) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/sw.js").catch(() => {
-      /* T.ex. via telefonens IP över http — appen fungerar ändå fint,
-         bara utan offline-cache. Se README. */
+function applyIds(target, saved) {
+  saved.segments.forEach((s, i) => {
+    const t = target.segments[i];
+    if (!t) return;
+    t.id = s.id;
+    s.versions.forEach((v, j) => {
+      if (t.versions[j]) t.versions[j].id = v.id;
     });
   });
 }
 
-/* =========================================================================
-   Init + statiska event
-   ========================================================================= */
+// Sista utvägen: spara innan fliken stängs.
+window.addEventListener("beforeunload", (e) => {
+  if (!dirty) return;
+  save();
+  e.preventDefault();
+  e.returnValue = "";
+});
 
-function bindStaticEvents() {
-  els.fabNewNote.addEventListener("click", async () => {
-    try {
-      const note = await API.createNote();
-      await loadNotes();
-      state.currentNote = note;
-      renderNotesList();
-      renderEditor();
-      els.appLayout.classList.add("show-detail");
-      els.noteTitleInput.focus();
-    } catch (e) {
-      showError(e.message);
-    }
-  });
+// Spara när man växlar bort från appen på telefonen.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden" && dirty) save();
+});
 
-  els.backBtn.addEventListener("click", closeDetail);
+/* ==========================================================================
+   Anteckningslistan
+   ========================================================================== */
 
-  els.noteTitleInput.addEventListener("input", () => {
-    showSaving();
-    clearTimeout(titleSaveTimer);
-    const value = els.noteTitleInput.value;
-    titleSaveTimer = setTimeout(async () => {
-      try {
-        const note = await API.updateNoteTitle(state.currentNote.id, value);
-        state.currentNote.title = note.title;
-        state.currentNote.updated_at = note.updated_at;
-        updateNoteInListLocally();
-        showSaved();
-      } catch (e) {
-        showError(e.message);
-      }
-    }, 600);
-  });
+function formatWhen(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const now = new Date();
+  const time = d.toLocaleTimeString("sv-SE", { hour: "2-digit", minute: "2-digit" });
+  if (d.toDateString() === now.toDateString()) return "Idag " + time;
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (d.toDateString() === yesterday.toDateString()) return "Igår " + time;
+  return d.toLocaleDateString("sv-SE", { day: "numeric", month: "short" }) + " " + time;
+}
 
-  els.deleteNoteBtn.addEventListener("click", async () => {
-    if (!state.currentNote) return;
-    if (!confirm("Ta bort hela anteckningen? Det går inte att ångra.")) return;
-    try {
-      const id = state.currentNote.id;
-      closeDetail();
-      await API.deleteNote(id);
-      await loadNotes();
-    } catch (e) {
-      showError(e.message);
-    }
-  });
+function renderList() {
+  el.noteList.textContent = "";
+  el.listEmpty.hidden = notes.length > 0;
 
-  els.addBlockBtn.addEventListener("click", async () => {
-    try {
-      await flushAllPendingSaves();
-      const note = await API.addBlock(state.currentNote.id);
-      state.currentNote = note;
-      renderEditor();
-      const textareas = els.blocksContainer.querySelectorAll(".block-content");
-      const last = textareas[textareas.length - 1];
-      if (last) last.focus();
-    } catch (e) {
-      showError(e.message);
-    }
-  });
+  for (const note of notes) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "note" + (current && current.id === note.id ? " active" : "");
 
-  els.themeToggleBtn.addEventListener("click", cycleTheme);
+    const title = document.createElement("span");
+    title.className = "note-title";
+    title.textContent = note.title || "Namnlös anteckning";
 
-  els.installBtn.addEventListener("click", async () => {
-    if (!deferredInstallPrompt) return;
-    deferredInstallPrompt.prompt();
-    await deferredInstallPrompt.userChoice;
-    deferredInstallPrompt = null;
-    els.installBtn.classList.add("hidden");
+    const meta = document.createElement("span");
+    meta.className = "note-meta";
+    meta.textContent = [formatWhen(note.updated_at), note.tags].filter(Boolean).join(" · ");
+
+    btn.append(title, meta);
+    btn.addEventListener("click", () => openNote(note.id));
+    el.noteList.appendChild(btn);
+  }
+}
+
+function updateListEntry(saved) {
+  const entry = notes.find((n) => n.id === saved.id);
+  if (!entry) return;
+  entry.title = saved.title;
+  entry.tags = saved.tags;
+  entry.updated_at = saved.updated_at;
+  notes.sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
+  renderList();
+}
+
+async function refreshList() {
+  notes = await api("/api/notes");
+  renderList();
+}
+
+/* ==========================================================================
+   Öppna / stänga en anteckning
+   ========================================================================== */
+
+async function openNote(id) {
+  if (current && current.id === id) {
+    closeDrawer();
+    return;
+  }
+  if (dirty) await save();     // byt aldrig anteckning med osparat innehåll
+  try {
+    current = await api("/api/notes/" + id);
+    dirty = false;
+    renderNote();
+    renderList();
+    closeDrawer();
+  } catch (err) {
+    setStatus("Kunde inte öppna", "error");
+    console.error(err);
+  }
+}
+
+function renderNote() {
+  const open = Boolean(current);
+  el.empty.hidden = open;
+  el.editor.hidden = !open;
+  el.titles.hidden = !open;
+  el.deleteNote.hidden = !open;
+  if (!open) return;
+
+  el.title.value = current.title || "";
+  el.tags.value = current.tags || "";
+  renderSegments();
+}
+
+/* ==========================================================================
+   Stycken och formuleringar
+   ========================================================================== */
+
+function autosize(ta) {
+  ta.style.height = "auto";
+  ta.style.height = ta.scrollHeight + "px";
+}
+
+function renderSegments() {
+  el.segments.textContent = "";
+  current.segments.forEach((seg) => el.segments.appendChild(segmentEl(seg)));
+  // Höjderna måste sättas efter att elementen finns i DOM:en.
+  requestAnimationFrame(() => {
+    el.segments.querySelectorAll(".ta").forEach(autosize);
   });
 }
 
-async function init() {
- 
+function segmentEl(seg) {
+  const node = $("#segmentTpl").content.cloneNode(true);
+  const article = node.querySelector(".segment");
+  // Numret läses ut vid rendering, inte lagras — annars blir det fel
+  // så fort ett stycke tas bort.
+  const index = current.segments.indexOf(seg);
+  article.querySelector(".seg-number").textContent = "Stycke " + (index + 1);
+
+  const original = article.querySelector(".original");
+  original.value = seg.original || "";
+  original.addEventListener("input", () => {
+    seg.original = original.value;
+    autosize(original);
+    markDirty();
+  });
+
+  article.querySelector(".seg-remove").addEventListener("click", () => {
+    if (!confirm("Ta bort stycket och alla dess formuleringar?")) return;
+    // Sök upp positionen just nu — inte den som gällde vid rendering.
+    const at = current.segments.indexOf(seg);
+    if (at === -1) return;
+    current.segments.splice(at, 1);
+    if (current.segments.length === 0) current.segments.push(blankSegment());
+    renderSegments();
+    markDirty();
+  });
+
+  const versions = article.querySelector(".versions");
+  seg.versions.forEach((v) => versions.appendChild(versionEl(seg, v)));
+
+  article.querySelector(".add-version").addEventListener("click", () => {
+    const v = { id: null, label: "Formulering " + (seg.versions.length + 1), text: seg.original || "" };
+    seg.versions.push(v);
+    const added = versionEl(seg, v);
+    versions.appendChild(added);
+    added.querySelectorAll(".ta").forEach(autosize);
+    added.querySelector(".version-text").focus();
+    markDirty();
+  });
+
+  return article;
+}
+
+function versionEl(seg, version) {
+  const node = $("#versionTpl").content.cloneNode(true);
+  const wrap = node.querySelector(".version");
+
+  const label = wrap.querySelector(".version-label");
+  label.value = version.label || "";
+  label.addEventListener("input", () => {
+    version.label = label.value;
+    markDirty();
+  });
+
+  const text = wrap.querySelector(".version-text");
+  text.value = version.text || "";
+  text.addEventListener("input", () => {
+    version.text = text.value;
+    autosize(text);
+    markDirty();
+  });
+
+  wrap.querySelector(".version-remove").addEventListener("click", () => {
+    const at = seg.versions.indexOf(version);
+    if (at === -1) return;
+    seg.versions.splice(at, 1);
+    wrap.remove();
+    markDirty();
+  });
+
+  return wrap;
+}
+
+function blankSegment() {
+  return { id: null, original: "", versions: [] };
+}
+
+/* ==========================================================================
+   Tema — ljust / mörkt / auto (auto följer klockan, 19–07 är mörkt)
+   ========================================================================== */
+
+const THEME_KEY = "foldnote-theme";
+const MODES = ["auto", "light", "dark"];
+const LABELS = { auto: "Auto", light: "Ljust", dark: "Mörkt" };
+
+function resolveTheme(mode) {
+  if (mode !== "auto") return mode;
+  const h = new Date().getHours();
+  return h >= 19 || h < 7 ? "dark" : "light";
+}
+
+function applyTheme(mode) {
+  const resolved = resolveTheme(mode);
+  document.documentElement.dataset.theme = resolved;
+  document.documentElement.dataset.themeMode = mode;
+  el.themeBtn.textContent = LABELS[mode];
+  el.themeBtn.title = `Tema: ${LABELS[mode]}. Tryck för att byta.`;
+  if (el.themeColorMeta) {
+    el.themeColorMeta.setAttribute("content", resolved === "dark" ? "#14110D" : "#FAF8F5");
+  }
+}
+
+function currentMode() {
+  try {
+    return localStorage.getItem(THEME_KEY) || "auto";
+  } catch (_) {
+    return "auto";
+  }
+}
+
+function cycleTheme() {
+  const next = MODES[(MODES.indexOf(currentMode()) + 1) % MODES.length];
+  try {
+    localStorage.setItem(THEME_KEY, next);
+  } catch (_) {}
+  applyTheme(next);
+}
+
+// Auto ska byta av sig själv när klockan passerar gränsen.
+setInterval(() => {
+  if (currentMode() === "auto") applyTheme("auto");
+}, 60000);
+
+/* ==========================================================================
+   Sidopanel på smal skärm
+   ========================================================================== */
+
+function openDrawer() {
+  el.sidebar.classList.add("open");
+  el.scrim.hidden = false;
+}
+
+function closeDrawer() {
+  el.sidebar.classList.remove("open");
+  el.scrim.hidden = true;
+}
+
+/* ==========================================================================
+   Händelser
+   ========================================================================== */
+
+async function createNote() {
+  if (dirty) await save();
+  try {
+    current = await api("/api/notes", {
+      method: "POST",
+      body: JSON.stringify({ title: "", tags: "" }),
+    });
+    dirty = false;
+    await refreshList();
+    renderNote();
+    renderList();
+    closeDrawer();
+    el.title.focus();
+  } catch (err) {
+    setStatus("Kunde inte skapa", "error");
+    console.error(err);
+  }
+}
+
+el.newNote.addEventListener("click", createNote);
+el.emptyNew.addEventListener("click", createNote);
+
+el.title.addEventListener("input", () => {
+  current.title = el.title.value;
+  markDirty();
+});
+
+el.tags.addEventListener("input", () => {
+  current.tags = el.tags.value;
+  markDirty();
+});
+
+el.addSegment.addEventListener("click", () => {
+  current.segments.push(blankSegment());
+  renderSegments();
+  markDirty();
+  const all = el.segments.querySelectorAll(".original");
+  if (all.length) all[all.length - 1].focus();
+});
+
+el.deleteNote.addEventListener("click", async () => {
+  if (!current) return;
+  if (!confirm("Ta bort hela anteckningen? Det går inte att ångra.")) return;
+  const id = current.id;
+  clearTimeout(saveTimer);
+  dirty = false;
+  current = null;
+  renderNote();
+  try {
+    await api("/api/notes/" + id, { method: "DELETE" });
+    await refreshList();
+  } catch (err) {
+    setStatus("Kunde inte ta bort", "error");
+    console.error(err);
+  }
+});
+
+el.menuBtn.addEventListener("click", () =>
+  el.sidebar.classList.contains("open") ? closeDrawer() : openDrawer()
+);
+el.scrim.addEventListener("click", closeDrawer);
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeDrawer();
+  if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+    e.preventDefault();
+    save();
+  }
+});
+
+el.themeBtn.addEventListener("click", cycleTheme);
+
+el.importBtn.addEventListener("click", () => el.importFile.click());
+
+el.importFile.addEventListener("change", async () => {
+  const file = el.importFile.files[0];
+  if (!file) return;
+  el.importFile.value = "";           // så att samma fil kan väljas igen
+  try {
+    const parsed = JSON.parse(await file.text());
+    const result = await api("/api/import", {
+      method: "POST",
+      body: JSON.stringify(parsed),
+    });
+    await refreshList();
+    setStatus(`La till ${result.added}`, "saved");
+  } catch (err) {
+    setStatus("Kunde inte importera", "error");
+    alert("Filen gick inte att läsa som en FoldNote-export.");
+    console.error(err);
+  }
+});
+
+/* ==========================================================================
+   Start
+   ========================================================================== */
+
+if ("serviceWorker" in navigator && window.isSecureContext) {
+  // Registreras i roten så att den får scope över hela appen.
+  // Över http mot datorns IP-adress hoppas den över — appen fungerar
+  // ändå, bara utan offline-cache. Se README.
+  navigator.serviceWorker.register("/sw.js").catch(() => {});
+}
+
+(async function init() {
+  applyTheme(currentMode());
+  renderNote();
+  try {
+    await refreshList();
+  } catch (err) {
+    setStatus("Ingen kontakt", "error");
+    console.error(err);
+  }
+})();
