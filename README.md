@@ -136,10 +136,10 @@ följer inte med när du pushar.
 ```
 app.py                        Rutter, JSON-lagring, migrering
 templates/index.html          App-skal och mallar för stycken och versioner
-static/style.css              Tokens, teman, responsiv layout
-static/app.js                 Rendering, autospar, tema, import
+static/css/style.css          Tokens, teman, responsiv layout
+static/js/app.js              Rendering, autospar, tema, import
 static/sw.js                  Service worker (serveras från /sw.js)
-static/manifest.webmanifest
+static/manifest.json
 static/icons/
 data/                         Din data, ignoreras av git
 ```

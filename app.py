@@ -235,9 +235,9 @@ def index():
     return render_template("index.html")
 
 
-@app.get("/manifest.webmanifest")
+@app.get("/manifest.json")
 def manifest():
-    return send_from_directory("static", "manifest.webmanifest", mimetype="application/manifest+json")
+    return send_from_directory("static", "manifest.json", mimetype="application/manifest+json")
 
 
 @app.get("/sw.js")
