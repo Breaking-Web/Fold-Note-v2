@@ -1,32 +1,17 @@
 {
-  "name": "Anteckningar",
-  "short_name": "Anteckningar",
-  "description": "Anteckningsapp där varje stycke kan ha flera alternativa versioner.",
+  "name": "FoldNote",
+  "short_name": "FoldNote",
+  "description": "Anteckningar där varje stycke kan ha flera alternativa formuleringar.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "orientation": "any",
-  "background_color": "#0d0d0c",
-  "theme_color": "#0d0d0c",
   "lang": "sv",
+  "background_color": "#14110D",
+  "theme_color": "#14110D",
   "icons": [
-    {
-      "src": "/static/icons/icon-192.png",
-      "sizes": "192x192",
-      "type": "image/png",
-      "purpose": "any"
-    },
-    {
-      "src": "/static/icons/icon-512.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "any"
-    },
-    {
-      "src": "/static/icons/icon-maskable-512.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "maskable"
-    }
+    { "src": "/static/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
   ]
 }

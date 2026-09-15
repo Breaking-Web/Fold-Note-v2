@@ -1,57 +1,37 @@
-// Service worker för Anteckningar.
-// Cachar app-skalet (HTML/CSS/JS/ikoner) för snabb start och grundläggande
-// offlinestöd. API-anrop (/api/...) går alltid mot nätverket eftersom
-// datan måste vara färsk.
+// Cachar app-skalet. API-anrop går alltid mot nätverket — anteckningar
+// måste vara färska, och en cachad version vore värre än ett tydligt fel.
 
-const CACHE_NAME = "anteckningar-shell-v1";
-const SHELL_ASSETS = [
-  "/",
-  "/static/css/style.css",
-  "/static/js/app.js",
-  "/manifest.json",
-  "/static/icons/icon-192.png",
-  "/static/icons/icon-512.png",
-];
+const CACHE = "foldnote-v2";
+const SHELL = ["/", "/static/css/style.css", "/static/js/app.js", "/manifest.json"];
 
-self.addEventListener("install", (event) => {
-  event.waitUntil(
-    caches
-      .open(CACHE_NAME)
-      .then((cache) => cache.addAll(SHELL_ASSETS))
-      .catch(() => {})
-  );
+self.addEventListener("install", (e) => {
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).catch(() => {}));
   self.skipWaiting();
 });
 
-self.addEventListener("activate", (event) => {
-  event.waitUntil(
+self.addEventListener("activate", (e) => {
+  e.waitUntil(
     caches
       .keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
 
-self.addEventListener("fetch", (event) => {
-  const url = new URL(event.request.url);
-
-  // Rör aldrig API-anrop — de ska alltid vara färska och kunna
-  // misslyckas tydligt om servern inte går att nå.
+self.addEventListener("fetch", (e) => {
+  const url = new URL(e.request.url);
+  if (e.request.method !== "GET") return;
   if (url.pathname.startsWith("/api/")) return;
-  if (event.request.method !== "GET") return;
 
-  event.respondWith(
-    caches.match(event.request).then((cached) => {
-      const network = fetch(event.request)
-        .then((response) => {
-          if (response && response.status === 200) {
-            const clone = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-          }
-          return response;
-        })
-        .catch(() => cached);
-      return cached || network;
-    })
+  e.respondWith(
+    fetch(e.request)
+      .then((res) => {
+        if (res && res.status === 200) {
+          const copy = res.clone();
+          caches.open(CACHE).then((c) => c.put(e.request, copy));
+        }
+        return res;
+      })
+      .catch(() => caches.match(e.request))
   );
 });
